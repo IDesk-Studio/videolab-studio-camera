@@ -1,65 +1,146 @@
-name: Build and Test
+name: Build
 
-on: [push]
-
-env:
-  # Path to the solution file relative to the root of the project.
-  SOLUTION_FILE_PATH: ./softcam.sln
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: Friendly Name
+        default: VideoLab Virtual Camera
+      count:
+        description: Number of Cameras
+        default: 2
+        type: number
+      dll:
+        description: Library Name
+        default: vlvcam
+      version:
+        description: Version
+        default: 1.0.0
 
 jobs:
+  matrix:
+    name: Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.count.outputs.count }}
+    steps:
+    - id: count
+      run: |
+        cat << EOF >> $GITHUB_OUTPUT
+        count=$(seq 1 "${{ inputs.count }}" | jq -cs '.')
+        EOF
+
   build:
+    name: Build Camera ${{ matrix.count }}
+    runs-on: windows-latest
+    needs: matrix
     strategy:
       matrix:
-        configuration: [Release, Debug]
-        platform: [x64, Win32]
-
-    runs-on: windows-latest
-
+        name: 
+          - ${{ inputs.name }}
+        count: ${{ fromJSON(needs.matrix.outputs.count) }}
     steps:
-    - uses: actions/checkout@v6
+    
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Replace Friendly Name
+      uses: richardrigutins/replace-in-files@v2
+      with:
+        files: src/**/*.cpp
+        search-text: DirectShow Softcam
+        replacement-text: ${{matrix.name }} ${{ matrix.count }}
+        encoding: utf8
+
+    - name: Replace LIBRARY Name
+      uses: richardrigutins/replace-in-files@v2
+      with:
+        files: src/softcam/softcam.def
+        search-text: LIBRARY softcam
+        replacement-text: LIBRARY ${{ inputs.dll }}${{ matrix.count }}
+        encoding: utf8
+
+    - name: Replace GUID
+      uses: richardrigutins/replace-in-files@v2
+      with:
+        files: src/softcam/softcam.cpp
+        search-text: CLSID_DShowSoftcam;
+        replacement-text: CLSID_DShowSoftcam_${{ matrix.count }};
+        encoding: utf8
 
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v2
 
-    - name: Restore NuGet packages
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: nuget restore ${{env.SOLUTION_FILE_PATH}}
+    - name: Cache Packages
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.nuget/packages
+          **/bin
+          **/obj
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+
+    - name: Restore Packages
+      run: nuget restore ./softcam.sln
 
     - name: Build Libraries
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      # Add additional options to the MSBuild command line here (like platform or verbosity level).
-      # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /m /p:Configuration=${{matrix.configuration}} /p:Platform=${{matrix.platform}} ${{env.SOLUTION_FILE_PATH}}
+      run: msbuild /m /p:Configuration=Release /p:Platform=x64 ./softcam.sln
 
-    - name: Core Tests
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: ${{matrix.platform}}/${{matrix.configuration}}/core_tests.exe
+    - name: Build Sender
+      run: msbuild /m /p:Configuration=Release /p:Platform=x64 ./examples/sender/sender.sln
 
-    - name: Dll Tests
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: ${{matrix.platform}}/${{matrix.configuration}}/dll_tests.exe
-
-    - name: Build Example sender
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /m /p:Configuration=${{matrix.configuration}} /p:Platform=${{matrix.platform}} ./examples/sender/sender.sln
-
-    - name: Build Example softcam_installer
-      working-directory: ${{env.GITHUB_WORKSPACE}}
-      run: msbuild /m /p:Configuration=${{matrix.configuration}} /p:Platform=${{matrix.platform}} ./examples/softcam_installer/softcam_installer.sln
-
-    - name: Build Example python_binding
-      working-directory: ./examples/python_binding
+    - name: Rename Files
       shell: cmd
-      if: ${{ matrix.configuration == 'Release' && matrix.platform == 'x64' }}
       run: |
-        echo yes | call DownloadPybind11.bat
-        call _GetPythonPath.bat
-        msbuild /m /p:Configuration=${{matrix.configuration}} /p:Platform=${{matrix.platform}} ./python_binding.sln
+        move x64\Release\softcam.dll ${{ inputs.dll }}${{ matrix.count }}.dll
+        move examples\sender\x64\Release\sender.exe ${{ inputs.dll }}${{ matrix.count }}.exe
 
-    - name: Test Python Binding
-      working-directory: ./examples/python_binding
-      shell: cmd
-      if: ${{ matrix.configuration == 'Release' && matrix.platform == 'x64' }}
-      run: |
-        pip install pytest numpy
-        pytest
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.dll }}${{ matrix.count }}
+        path: |
+          ${{ inputs.dll }}${{ matrix.count }}.dll
+          ${{ inputs.dll }}${{ matrix.count }}.exe
+
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: output
+
+      - name: Zip Artifacts
+        run: |
+          cp -rf src/scripts/* output/
+          cd output
+          zip -jr ../cameras.zip .
+
+      - name: Remove Assets
+        uses: mknejp/delete-release-assets@v1
+        with:
+          token: ${{ secrets.GH_PAT }}
+          tag: ${{ inputs.version }}
+          assets: '*.*'
+          fail-if-no-assets: false
+          fail-if-no-release: false
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cameras.zip
+          name: ${{ inputs.version }}
+          tag_name: ${{ inputs.version }}
+          token: ${{ secrets.GH_PAT }}
+          body: |
+            Library Name: `${{ inputs.dll }}`
+            Friendly Name: `${{ inputs.name }}`
+            Number of Cameras: `${{ inputs.count }}`
