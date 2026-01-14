@@ -1,3 +1,5 @@
+LIBRARY softcam
+
 EXPORTS
             DllMain                 PRIVATE
             DllGetClassObject       PRIVATE
