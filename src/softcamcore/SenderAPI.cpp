@@ -22,9 +22,9 @@ std::atomic<Camera*>    s_camera;
 namespace softcam {
 namespace sender {
 
-CameraHandle    CreateCamera(int width, int height, float framerate)
+CameraHandle    CreateCamera(int width, int height, float framerate, PixelFormat format)
 {
-    if (auto fb = FrameBuffer::create(width, height, framerate))
+    if (auto fb = FrameBuffer::create(width, height, framerate, format))
     {
         Camera* camera = new Camera{ fb, Timer() };
         Camera* expected = nullptr;

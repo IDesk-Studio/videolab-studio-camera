@@ -157,9 +157,27 @@ BOOL APIENTRY DllMain(HANDLE hModule, DWORD  dwReason, LPVOID lpReserved)
 // Softcam Sender API
 //
 
+// Helper function to convert public enum to internal enum
+static softcam::PixelFormat convertPixelFormat(scPixelFormat format)
+{
+    switch (format)
+    {
+        case SC_PIXELFORMAT_ARGB32:
+            return softcam::PixelFormat::ARGB32;
+        case SC_PIXELFORMAT_RGB24:
+        default:
+            return softcam::PixelFormat::RGB24;
+    }
+}
+
 extern "C" scCamera scCreateCamera(int width, int height, float framerate)
 {
-    return softcam::sender::CreateCamera(width, height, framerate);
+    return softcam::sender::CreateCamera(width, height, framerate, softcam::PixelFormat::RGB24);
+}
+
+extern "C" scCamera scCreateCameraEx(int width, int height, float framerate, scPixelFormat format)
+{
+    return softcam::sender::CreateCamera(width, height, framerate, convertPixelFormat(format));
 }
 
 extern "C" void     scDeleteCamera(scCamera camera)

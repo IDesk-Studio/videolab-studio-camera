@@ -9,7 +9,7 @@ namespace softcam {
 
 const char NamedMutexName[] = "DirectShow Softcam/NamedMutex";
 const char SharedMemoryName[] = "DirectShow Softcam/SharedMemory";
-const uint8_t ProtocolVersion = 2;
+const uint8_t ProtocolVersion = 3;
 
 
 struct FrameBuffer::Header
@@ -19,10 +19,11 @@ struct FrameBuffer::Header
     uint16_t    m_height;
     float       m_framerate;
     uint8_t     m_is_active;
-    uint8_t     m_connected_min_version; // 0 or 1 or 2
+    uint8_t     m_connected_min_version; // 0 or 1 or 2 or 3
     uint8_t     m_watchdog_sender_heartbeat;
     uint8_t     m_watchdog_receiver_heartbeat;
     uint64_t    m_frame_counter;
+    uint8_t     m_pixel_format; // PixelFormat enum
 
     uint8_t*    imageData();
 };
@@ -38,7 +39,8 @@ uint8_t* FrameBuffer::Header::imageData()
 FrameBuffer FrameBuffer::create(
                         int             width,
                         int             height,
-                        float           framerate)
+                        float           framerate,
+                        PixelFormat     format)
 {
     FrameBuffer fb(NamedMutexName);
 
@@ -51,7 +53,7 @@ FrameBuffer FrameBuffer::create(
         return fb;
     }
 
-    auto shmem_size = calcMemorySize((uint16_t)width, (uint16_t)height);
+    auto shmem_size = calcMemorySize((uint16_t)width, (uint16_t)height, format);
     fb.m_shmem = SharedMemory::create(SharedMemoryName, shmem_size);
     if (fb.m_shmem)
     {
@@ -67,6 +69,7 @@ FrameBuffer FrameBuffer::create(
         frame->m_watchdog_sender_heartbeat = 0;
         frame->m_watchdog_receiver_heartbeat = 0;
         frame->m_frame_counter = 0;
+        frame->m_pixel_format = static_cast<uint8_t>(format);
 
         auto mutex = fb.m_mutex;
         fb.m_sender_watchdog = Watchdog::createHeartbeat(
@@ -180,6 +183,17 @@ float FrameBuffer::framerate() const
     return m_shmem ? header()->m_framerate : 0.0f;
 }
 
+PixelFormat FrameBuffer::pixelFormat() const
+{
+    std::lock_guard<NamedMutex> lock(m_mutex);
+    if (m_shmem)
+    {
+        auto format_value = header()->m_pixel_format;
+        return static_cast<PixelFormat>(format_value);
+    }
+    return PixelFormat::RGB24;
+}
+
 uint64_t FrameBuffer::frameCounter() const
 {
     std::lock_guard<NamedMutex> lock(m_mutex);
@@ -227,10 +241,12 @@ void FrameBuffer::write(const void* image_bits)
     if (!m_shmem) return;
     std::lock_guard<NamedMutex> lock(m_mutex);
     auto frame = header();
+    auto format = static_cast<PixelFormat>(frame->m_pixel_format);
+    auto bpp = bytesPerPixel(format);
     std::memcpy(
             frame->imageData(),
             image_bits,
-            (std::size_t)3 * frame->m_width * frame->m_height);
+            (std::size_t)bpp * frame->m_width * frame->m_height);
     frame->m_frame_counter += 1;
 }
 
@@ -247,14 +263,22 @@ void FrameBuffer::transferToDIB(void* image_bits, uint64_t* out_frame_counter)
     {
         int w = frame->m_width;
         int h = frame->m_height;
-        int gap = ((w * 3 + 3) & ~3) - w * 3;
+        auto format = static_cast<PixelFormat>(frame->m_pixel_format);
+        auto bpp = bytesPerPixel(format);
+
+        // Calculate stride (aligned to 4 bytes for DIB format)
+        int stride = ((w * bpp + 3) & ~3);
+        int gap = stride - w * bpp;
+
         const std::uint8_t* image = frame->imageData();
         std::uint8_t* dest = (std::uint8_t*)image_bits;
+
+        // Copy image data line by line (bottom-up for DIB)
         for (int y = 0; y < h; y++)
         {
-            const std::uint8_t* src = image + 3 * w * (h - 1 - y);
-            std::memcpy(dest, src, 3 * (uint32_t)w);
-            dest += 3 * w + gap;
+            const std::uint8_t* src = image + bpp * w * (h - 1 - y);
+            std::memcpy(dest, src, bpp * (uint32_t)w);
+            dest += bpp * w + gap;
         }
         *out_frame_counter = frame->m_frame_counter;
     }
@@ -312,12 +336,27 @@ bool FrameBuffer::checkDimensions(
     return true;
 }
 
+uint8_t FrameBuffer::bytesPerPixel(PixelFormat format)
+{
+    switch (format)
+    {
+        case PixelFormat::RGB24:
+            return 3;
+        case PixelFormat::ARGB32:
+            return 4;
+        default:
+            return 3;
+    }
+}
+
 uint32_t FrameBuffer::calcMemorySize(
                         uint16_t width,
-                        uint16_t height)
+                        uint16_t height,
+                        PixelFormat format)
 {
     uint32_t header_size = sizeof(Header);
-    uint32_t image_size = (uint32_t)width * height * 3;
+    uint32_t bpp = bytesPerPixel(format);
+    uint32_t image_size = (uint32_t)width * height * bpp;
     uint32_t shmem_size = header_size + image_size;
     return shmem_size;
 }

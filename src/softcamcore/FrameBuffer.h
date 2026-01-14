@@ -12,6 +12,15 @@ namespace softcam {
 using std::uint64_t;
 using std::uint32_t;
 using std::uint16_t;
+using std::uint8_t;
+
+
+/// Pixel format for frame buffer
+enum class PixelFormat : uint8_t
+{
+    RGB24 = 0,    // 24-bit RGB (3 bytes per pixel), no alpha channel
+    ARGB32 = 1    // 32-bit ARGB (4 bytes per pixel), with alpha channel
+};
 
 
 /// Shared frame buffer between processes (sender and receiver)
@@ -21,7 +30,8 @@ class FrameBuffer
     static FrameBuffer create(
                         int             width,
                         int             height,
-                        float           framerate = 0.0f);
+                        float           framerate = 0.0f,
+                        PixelFormat     format = PixelFormat::RGB24);
     static FrameBuffer open();
 
     FrameBuffer& operator =(const FrameBuffer&);
@@ -31,6 +41,7 @@ class FrameBuffer
     int             width() const;
     int             height() const;
     float           framerate() const;
+    PixelFormat     pixelFormat() const;
     uint64_t        frameCounter() const;
     bool            active() const;
     bool            connected() const;
@@ -64,7 +75,9 @@ class FrameBuffer
                         int height);
     static uint32_t calcMemorySize(
                         uint16_t width,
-                        uint16_t height);
+                        uint16_t height,
+                        PixelFormat format);
+    static uint8_t  bytesPerPixel(PixelFormat format);
 };
 
 
